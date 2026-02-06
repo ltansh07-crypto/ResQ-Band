@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AeroSafe MK-1 | Advanced Prototype</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        body { margin: 0; overflow: hidden; background: #000510; font-family: 'Rajdhani', sans-serif; }
+        .hud-font { font-family: 'Share Tech Mono', monospace; }
+        
+        /* 3D Label Styles - Z-index increased to stay on top */
+        .label {
+            position: absolute;
+            background: rgba(0, 20, 40, 0.85);
+            border: 1px solid #00aaff;
+            color: #00aaff;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: 'Share Tech Mono', monospace;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.3s;
+            transform: translate(-50%, -50%);
+            white-space: nowrap;
+            box-shadow: 0 0 10px rgba(0, 170, 255, 0.3);
+            z-index: 50; /* Ensures labels are always above the 3D canvas */
+        }
+        .label::after {
+            content: '';
+            position: absolute;
+            bottom: -5px;
+            left: 50%;
+            width: 1px;
+            height: 5px;
+            background: #00aaff;
+        }
+
+        /* Glass UI Panels */
+        .glass-panel {
+            background: rgba(10, 15, 30, 0.6);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+        }
+        
+        .btn-tech {
+            background: linear-gradient(45deg, #0f172a, #1e293b);
+            border: 1px solid #3b82f6;
+            color: white;
+            transition: all 0.3s ease;
+        }
+        .btn-tech:hover {
+            background: #3b82f6;
+            box-shadow: 0 0 15px #3b82f6;
+        }
+
+        #loading {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; z-index: 100; display: flex;
+            justify-content: center; align-items: center; color: #3b82f6;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Loading Screen -->
+    <div id="loading" class="hud-font text-2xl tracking-widest">LOADING ASSETS...</div>
+
+    <!-- 3D Labels (Dynamically updated) -->
+    <div id="labels-container"></div>
+
+    <!-- UI Overlay -->
+    <div class="absolute inset-0 pointer-events-none z-10 flex flex-col justify-between p-6">
+        
+        <!-- Header -->
+        <div class="flex justify-between items-start pointer-events-auto">
+            <div class="z-20"> <!-- Added z-index to ensure header stays on top -->
+                <h1 class="text-5xl text-white font-bold tracking-tighter uppercase drop-shadow-[0_0_10px_rgba(59,130,246,0.5)]">AeroSafe <span class="text-blue-500">MK-1</span></h1>
+                <p class="text-blue-300 hud-font text-sm mt-1 tracking-widest">SURVIVOR LOCATOR UNIT // EXPLODED VIEW</p>
+            </div>
+            
+            <!-- System Status - Moved slightly inward if needed, but z-index fixes overlap -->
+            <div class="glass-panel p-4 rounded-md w-48 text-right border-r-4 border-blue-500 z-20">
+                <div class="text-xs text-gray-400 uppercase tracking-wider">System State</div>
+                <div id="status-text" class="text-xl text-green-400 font-bold hud-font">ARMED</div>
+                <div class="w-full bg-gray-700 h-1 mt-2 rounded-full overflow-hidden">
+                    <div id="battery-bar" class="bg-blue-500 h-full w-full shadow-[0_0_10px_#3b82f6]"></div>
+                </div>
+                <div class="text-[10px] text-blue-300 mt-1 flex justify-between">
+                    <span>BATTERY</span>
+                    <span>100%</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Instructions - MOVED from Center to Bottom to avoid hiding behind model -->
+        <div class="absolute bottom-32 left-1/2 transform -translate-x-1/2 text-center pointer-events-none opacity-70 w-full">
+            <p id="instruction-text" class="text-blue-200 hud-font text-sm tracking-[0.3em] uppercase animate-pulse">
+                Click Model to Inspect Components
+            </p>
+        </div>
+
+        <!-- Footer Controls -->
+        <div class="flex justify-center items-end pb-8 pointer-events-auto gap-4 z-20">
+            <button onclick="toggleExplosion()" class="btn-tech px-8 py-3 rounded text-sm font-bold uppercase hud-font tracking-wider">
+                Toggle Exploded View
+            </button>
+            <button onclick="triggerCrash()" class="btn-tech px-8 py-3 rounded text-sm font-bold uppercase hud-font tracking-wider border-red-500 hover:bg-red-600 hover:shadow-red-500">
+                Simulate Crash
+            </button>
+        </div>
+    </div>
+
+    <!-- Canvas -->
+    <div id="canvas-container" class="absolute inset-0 z-0 cursor-move"></div>
+
+    <script>
+        // --- CONFIGURATION ---
+        const CONFIG = {
+            explodeSpacing: 0.6, // Vertical distance between parts when exploded
+            animSpeed: 0.08,     // Speed of explosion animation (lerp factor)
+            colors: {
+                titanium: 0x444955,
+                rubber: 0x111111,
+                pcb: 0x003300,
+                gold: 0xffaa00,
+                led_off: 0x333333,
+                led_on: 0x00ccff,
+                alert: 0xff0000
+            }
+        };
+
+        // --- SCENE SETUP ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x000510, 0.02);
+
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+        // Adjusted camera position: Zoomed out (increased z from 6 to 8) to prevent overlap with UI
+        camera.position.set(6, 5, 8); 
+        camera.lookAt(0, 0.5, 0); // Still looking at the center of the watch
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        container.appendChild(renderer.domElement);
+
+        // --- LIGHTING ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        dirLight.position.set(5, 10, 7);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        const rimLight = new THREE.PointLight(0x3b82f6, 1.5, 20); // Blue Rim Light
+        rimLight.position.set(-5, 0, -5);
+        scene.add(rimLight);
+
+        const alertLight = new THREE.PointLight(0xff0000, 0, 15); // Red Alert Light
+        alertLight.position.set(2, 2, 2);
+        scene.add(alertLight);
+
+        // --- MATERIALS ---
+        const mats = {
+            titanium: new THREE.MeshStandardMaterial({ color: CONFIG.colors.titanium, roughness: 0.4, metalness: 0.8 }),
+            rubber: new THREE.MeshStandardMaterial({ color: CONFIG.colors.rubber, roughness: 0.9, metalness: 0.1 }),
+            glass: new THREE.MeshPhysicalMaterial({ color: 0x88ccff, roughness: 0, metalness: 0.1, transmission: 0.9, transparent: true, thickness: 0.5 }),
+            pcb: new THREE.MeshStandardMaterial({ color: CONFIG.colors.pcb, roughness: 0.3, metalness: 0.5 }),
+            gold: new THREE.MeshStandardMaterial({ color: CONFIG.colors.gold, roughness: 0.2, metalness: 1.0 }),
+            chip: new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.3 }),
+            battery: new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.4, metalness: 0.6 }),
+            antenna: new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.1 }),
+            screen: new THREE.MeshBasicMaterial({ color: 0x000000 }) // Placeholder, texture added later
+        };
+
+        // --- TEXTURE GENERATOR ---
+        function createHUDTexture(mode) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 512; canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            
+            // BG
+            ctx.fillStyle = mode === 'CRASH' ? '#330000' : '#000000';
+            ctx.fillRect(0,0,512,512);
+
+            if(mode === 'NORMAL') {
+                ctx.strokeStyle = '#00aaff'; ctx.lineWidth = 10;
+                ctx.beginPath(); ctx.arc(256, 180, 80, 0, Math.PI*2); ctx.stroke();
+                
+                ctx.fillStyle = '#00aaff'; ctx.font = 'bold 40px Arial'; ctx.textAlign = 'center';
+                ctx.fillText('GPS ACTIVE', 256, 320);
+                
+                // Signal Bars
+                ctx.fillStyle = '#00ff00';
+                ctx.fillRect(180, 360, 20, 40);
+                ctx.fillRect(210, 350, 20, 50);
+                ctx.fillRect(240, 340, 20, 60);
+                ctx.fillRect(270, 330, 20, 70);
+            } else {
+                ctx.fillStyle = '#ff0000'; ctx.font = 'bold 120px Arial'; ctx.textAlign = 'center';
+                ctx.fillText('SOS', 256, 280);
+                ctx.fillStyle = '#ffffff'; ctx.font = '30px Arial';
+                ctx.fillText('IMPACT DETECTED', 256, 350);
+            }
+            return new THREE.CanvasTexture(canvas);
+        }
+        mats.screen.map = createHUDTexture('NORMAL');
+
+        // --- MODEL BUILDING ---
+        const watchGroup = new THREE.Group();
+        const parts = []; // Store parts for animation { mesh, label, yOffset }
+
+        // Helper to add part
+        function addPart(mesh, name, yLevel, parent = watchGroup) {
+            mesh.userData = { 
+                originY: mesh.position.y, 
+                targetY: mesh.position.y + (yLevel * CONFIG.explodeSpacing),
+                name: name
+            };
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            parent.add(mesh);
+            
+            // Create Label Element
+            const div = document.createElement('div');
+            div.className = 'label';
+            div.textContent = name;
+            document.getElementById('labels-container').appendChild(div);
+            
+            parts.push({ mesh: mesh, element: div, offset: yLevel });
+            return mesh;
+        }
+
+        // 1. Chassis (Base) - Level 0
+        const chassisGeo = new THREE.CylinderGeometry(1.4, 1.4, 0.5, 6); // Hex-like
+        const chassis = new THREE.Mesh(chassisGeo, mats.titanium);
+        addPart(chassis, "Titanium Alloy Chassis", 0);
+
+        // 1b. Straps (Attached to Chassis logic, but visually separate for now)
+        const strapGeo = new THREE.BoxGeometry(1.2, 0.2, 1.5);
+        const strap1 = new THREE.Mesh(strapGeo, mats.rubber);
+        strap1.position.set(0, -0.1, 1.5); strap1.rotation.x = 0.5;
+        chassis.add(strap1); // Child of chassis, moves with it
+        
+        const strap2 = new THREE.Mesh(strapGeo, mats.rubber);
+        strap2.position.set(0, -0.1, -1.5); strap2.rotation.x = -0.5;
+        chassis.add(strap2);
+
+        // 2. Battery - Level 1
+        const battGeo = new THREE.BoxGeometry(1.0, 0.3, 1.0);
+        const battery = new THREE.Mesh(battGeo, mats.battery);
+        battery.position.y = 0.3;
+        addPart(battery, "Li-Ion Battery (15yr)", 1);
+
+        // 3. Motherboard (PCB) - Level 2
+        const pcbGeo = new THREE.BoxGeometry(1.2, 0.05, 1.2);
+        const pcb = new THREE.Mesh(pcbGeo, mats.pcb);
+        pcb.position.y = 0.5;
+        addPart(pcb, "Main Logic Board", 2);
+
+        // 3b. Components on PCB (Children of PCB)
+        const gpsChip = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.1, 0.3), mats.antenna);
+        gpsChip.position.set(0.3, 0.05, 0.3);
+        pcb.add(gpsChip); // Move with PCB
+
+        const sensorChip = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.05, 0.15), new THREE.MeshStandardMaterial({color: 0xff0000}));
+        sensorChip.position.set(-0.3, 0.05, -0.2);
+        pcb.add(sensorChip);
+
+        const cpu = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.05, 0.4), mats.chip);
+        cpu.position.set(0, 0.05, 0);
+        pcb.add(cpu);
+
+        // 4. LCD Display - Level 3
+        const lcdGeo = new THREE.CylinderGeometry(1.1, 1.1, 0.05, 32);
+        const lcd = new THREE.Mesh(lcdGeo, mats.screen);
+        lcd.position.y = 0.6;
+        addPart(lcd, "OLED Display Module", 3);
+
+        // 5. Bezel (Rim) - Level 4
+        const bezelGeo = new THREE.TorusGeometry(1.2, 0.15, 4, 6); // Hex rim
+        const bezel = new THREE.Mesh(bezelGeo, mats.titanium);
+        bezel.rotation.x = Math.PI/2;
+        bezel.rotateZ(Math.PI/6); // Align hex
+        bezel.position.y = 0.7;
+        addPart(bezel, "Impact Bezel", 4);
+
+        // 6. Sapphire Glass - Level 5
+        const glassGeo = new THREE.CylinderGeometry(1.15, 1.15, 0.02, 6);
+        const glass = new THREE.Mesh(glassGeo, mats.glass);
+        glass.position.y = 0.8;
+        addPart(glass, "Sapphire Crystal", 5);
+
+        scene.add(watchGroup);
+        watchGroup.rotation.x = 0.3;
+        watchGroup.rotation.y = -0.5;
+
+        // --- INTERACTION LOGIC ---
+        let isExploded = false;
+        let isCrashMode = false;
+
+        function updatePositions() {
+            parts.forEach(part => {
+                // 1. Lerp Position
+                const target = isExploded ? part.mesh.userData.targetY : part.mesh.userData.originY;
+                part.mesh.position.y += (target - part.mesh.position.y) * CONFIG.animSpeed;
+
+                // 2. Update Label Position
+                if (isExploded) {
+                    // Get world position of the mesh
+                    const tempV = new THREE.Vector3();
+                    part.mesh.getWorldPosition(tempV);
+                    
+                    // Add slight offset for label connector
+                    tempV.x += 0.8; 
+                    
+                    // Project to 2D screen space
+                    tempV.project(camera);
+                    
+                    const x = (tempV.x * .5 + .5) * container.clientWidth;
+                    const y = (tempV.y * -.5 + .5) * container.clientHeight;
+
+                    part.element.style.transform = `translate(${x}px, ${y}px)`;
+                    part.element.style.opacity = 1;
+                } else {
+                    part.element.style.opacity = 0;
+                }
+            });
+        }
+
+        // --- GLOBAL FUNCTIONS ---
+        window.toggleExplosion = () => {
+            isExploded = !isExploded;
+            document.getElementById('instruction-text').style.opacity = 0;
+        };
+
+        window.triggerCrash = () => {
+            isCrashMode = !isCrashMode;
+            const status = document.getElementById('status-text');
+            
+            if(isCrashMode) {
+                mats.screen.map = createHUDTexture('CRASH');
+                status.innerText = "CRASH DETECTED";
+                status.classList.remove('text-green-400');
+                status.classList.add('text-red-500', 'animate-pulse');
+                alertLight.intensity = 2;
+            } else {
+                mats.screen.map = createHUDTexture('NORMAL');
+                status.innerText = "ARMED";
+                status.classList.add('text-green-400');
+                status.classList.remove('text-red-500', 'animate-pulse');
+                alertLight.intensity = 0;
+            }
+        };
+
+        // --- MOUSE INPUT ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        
+        // Click to Explode
+        window.addEventListener('mousedown', (event) => {
+            // Calculate mouse position in normalized device coordinates
+            // Only trigger if click is on canvas, not UI
+            if(event.target.closest('button')) return;
+
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(watchGroup.children, true);
+
+            if (intersects.length > 0) {
+                window.toggleExplosion();
+            }
+        });
+
+        // Rotate Model
+        let isDragging = false;
+        let prevX = 0, prevY = 0;
+        
+        window.addEventListener('mousedown', (e) => { isDragging = true; prevX = e.clientX; prevY = e.clientY; });
+        window.addEventListener('mouseup', () => { isDragging = false; });
+        window.addEventListener('mousemove', (e) => {
+            if(isDragging) {
+                const deltaX = e.clientX - prevX;
+                const deltaY = e.clientY - prevY;
+                watchGroup.rotation.y += deltaX * 0.005;
+                watchGroup.rotation.x += deltaY * 0.005;
+                prevX = e.clientX;
+                prevY = e.clientY;
+            }
+        });
+
+        // --- ANIMATION LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            updatePositions();
+
+            // Idle rotation
+            if(!isDragging && !isExploded) {
+                watchGroup.rotation.y += 0.002;
+            }
+
+            // Crash Animation (Pulse)
+            if(isCrashMode) {
+                const time = Date.now() * 0.005;
+                alertLight.intensity = (Math.sin(time * 2) + 1) * 1.5;
+                mats.screen.emissive = new THREE.Color(0xff0000);
+                mats.screen.emissiveIntensity = (Math.sin(time * 4) + 1) * 0.5;
+            } else {
+                mats.screen.emissiveIntensity = 0;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Hide loader
+        document.getElementById('loading').style.display = 'none';
+        
+        animate();
+
+        // Handle Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+</html>
